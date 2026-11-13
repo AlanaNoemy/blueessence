@@ -878,6 +878,7 @@ def main():
             grafico_comparativo(previsoes),
             use_container_width=True
         )
+        
 
     # ================================================
     # DESEMPENHO DOS MODELOS

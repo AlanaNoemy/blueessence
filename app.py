@@ -1136,7 +1136,7 @@ elif pagina == "Inteligência preditiva":
 
     titulo(
         "Inteligência preditiva",
-        "Projeções estatísticas para os próximos 24 meses."
+        "Projeções estatísticas e análise dos próximos 24 meses."
     )
 
     sistema = st.selectbox(
@@ -1152,183 +1152,305 @@ elif pagina == "Inteligência preditiva":
         and dados[sistema][indicador].notna().sum() >= 12
     ]
 
-    indicador = st.selectbox(
-        "Indicador para previsão",
-        indicadores_disponiveis,
-        format_func=lambda x: (
-            f"{INDICADORES[x]['nome']} "
-            f"({INDICADORES[x]['unidade']})"
-        )
-    )
-
-    serie_original = dados[sistema][indicador].dropna()
-
-    if len(serie_original) < 12:
+    if not indicadores_disponiveis:
         st.warning(
-            "São necessários pelo menos 12 registros mensais "
-            "para realizar uma projeção."
+            "Não existem indicadores com pelo menos 12 registros "
+            "mensais para realizar previsões."
         )
         st.stop()
 
-    with st.spinner("Treinando e avaliando os modelos estatísticos..."):
+    opcoes_indicadores = ["Tudo"] + indicadores_disponiveis
+
+    indicador_selecionado = st.selectbox(
+        "Indicador para previsão",
+        opcoes_indicadores,
+        format_func=lambda x: (
+            "Todos os indicadores disponíveis"
+            if x == "Tudo"
+            else (
+                f"{INDICADORES[x]['nome']} "
+                f"({INDICADORES[x]['unidade']})"
+            )
+        )
+    )
+
+    if indicador_selecionado == "Tudo":
+        indicadores_exibidos = indicadores_disponiveis
+    else:
+        indicadores_exibidos = [indicador_selecionado]
+
+    st.markdown("---")
+    st.markdown("### Painel de projeções")
+
+    st.caption(
+        f"Reservatório: {sistema} | Horizonte: 24 meses | "
+        f"Indicadores: {len(indicadores_exibidos)}"
+    )
+
+    resultados_gerais = []
+    analises_gerais = []
+
+    for indicador in indicadores_exibidos:
+
+        nome = INDICADORES[indicador]["nome"]
+        unidade = INDICADORES[indicador]["unidade"]
+        serie_original = dados[sistema][indicador].dropna()
+
+        if len(serie_original) < 12:
+            st.warning(
+                f"Dados insuficientes para projetar {nome.lower()}."
+            )
+            continue
 
         try:
-            (
+            with st.spinner(
+                f"Calculando projeção de {nome.lower()}..."
+            ):
+                (
+                    serie,
+                    datas,
+                    previsao,
+                    inferior,
+                    superior,
+                    melhor,
+                    avaliacao
+                ) = gerar_previsao(
+                    tuple(serie_original.values),
+                    tuple(serie_original.index.astype(str)),
+                    indicador
+                )
+
+        except Exception as erro:
+            st.error(
+                f"Falha ao projetar {nome.lower()}: {erro}"
+            )
+            continue
+
+        st.markdown("---")
+        st.markdown(f"## {nome}")
+
+        st.success(
+            f"Modelo selecionado para {nome.lower()}: {melhor}"
+        )
+
+        st.plotly_chart(
+            grafico_previsao(
                 serie,
                 datas,
                 previsao,
                 inferior,
                 superior,
-                melhor,
-                avaliacao
-            ) = gerar_previsao(
-                tuple(serie_original.values),
-                tuple(serie_original.index.astype(str)),
-                indicador
+                indicador,
+                sistema
+            ),
+            use_container_width=True,
+            key=f"grafico_previsao_{sistema}_{indicador}"
+        )
+
+        c1, c2, c3 = st.columns(3)
+
+        with c1:
+            card_metrica(
+                "Último valor observado",
+                formatar_valor(serie.iloc[-1], unidade),
+                f"Referência: {serie.index[-1]:%m/%Y}",
+                AZUL
             )
 
-        except Exception as erro:
-            st.error(f"Não foi possível gerar a previsão: {erro}")
-            st.stop()
+        with c2:
+            card_metrica(
+                "Projeção em 12 meses",
+                formatar_valor(previsao[11], unidade),
+                f"Data: {datas[11]:%m/%Y}",
+                "#E9A23B"
+            )
 
-    nome_indicador = INDICADORES[indicador]["nome"]
-    unidade = INDICADORES[indicador]["unidade"]
+        with c3:
+            card_metrica(
+                "Projeção em 24 meses",
+                formatar_valor(previsao[23], unidade),
+                f"Data: {datas[23]:%m/%Y}",
+                "#10A77B"
+            )
 
-    st.success(
-        f"Modelo selecionado automaticamente: {melhor}"
-    )
+        variacao_12 = previsao[11] - serie.iloc[-1]
+        variacao_24 = previsao[23] - serie.iloc[-1]
 
-    st.plotly_chart(
-        grafico_previsao(
-            serie,
-            datas,
-            previsao,
-            inferior,
-            superior,
-            indicador,
-            sistema
-        ),
-        use_container_width=True
-    )
-
-    c1, c2, c3 = st.columns(3)
-
-    with c1:
-        card_metrica(
-            "Último valor observado",
-            formatar_valor(serie.iloc[-1], unidade),
-            f"{serie.index[-1]:%m/%Y}",
-            AZUL
+        percentual = (
+            (variacao_24 / abs(serie.iloc[-1])) * 100
+            if serie.iloc[-1] != 0
+            else np.nan
         )
 
-    with c2:
-        card_metrica(
-            "Projeção em 12 meses",
-            formatar_valor(previsao[11], unidade),
-            f"{datas[11]:%m/%Y}",
-            "#F0A23B"
+        if variacao_24 > 0:
+            tendencia = "crescimento"
+        elif variacao_24 < 0:
+            tendencia = "redução"
+        else:
+            tendencia = "estabilidade"
+
+        texto = f"""
+        **Análise de {nome.lower()} — {sistema}**
+
+        O último registro histórico apresenta
+        **{serie.iloc[-1]:.2f} {unidade}**.
+
+        Para os próximos 12 meses, o modelo estima
+        **{previsao[11]:.2f} {unidade}**, com variação de
+        **{variacao_12:+.2f} {unidade}** em relação ao último
+        valor observado.
+
+        No horizonte de 24 meses, a estimativa é de
+        **{previsao[23]:.2f} {unidade}**. A variação acumulada
+        projetada é de **{variacao_24:+.2f} {unidade}**.
+
+        Isso representa uma tendência de **{tendencia}**.
+        A variação percentual estimada no horizonte é
+        **{percentual:.2f}%** quando o valor de referência
+        é diferente de zero.
+
+        O modelo selecionado foi **{melhor}**, com escolha
+        baseada no desempenho obtido durante a validação temporal.
+        """
+
+        texto_analise(texto)
+
+        analises_gerais.append({
+            "Indicador": nome,
+            "Último observado": serie.iloc[-1],
+            "Previsão 12 meses": previsao[11],
+            "Previsão 24 meses": previsao[23],
+            "Variação em 24 meses": variacao_24,
+            "Modelo": melhor,
+            "Unidade": unidade
+        })
+
+        with st.expander(
+            f"Ver validação estatística — {nome}"
+        ):
+            st.dataframe(
+                avaliacao.style.format({
+                    "MAE": "{:.3f}",
+                    "RMSE": "{:.3f}",
+                    "Viés": "{:.3f}"
+                }),
+                use_container_width=True,
+                hide_index=True
+            )
+
+            st.caption(
+                "MAE representa o erro absoluto médio; RMSE "
+                "penaliza mais os erros maiores; viés indica "
+                "a tendência de superestimar ou subestimar."
+            )
+
+        tabela = pd.DataFrame({
+            "Data": datas,
+            "Indicador": nome,
+            "Previsão": previsao,
+            "Limite inferior": inferior,
+            "Limite superior": superior,
+            "Unidade": unidade,
+            "Modelo": melhor
+        })
+
+        resultados_gerais.append(tabela)
+
+        with st.expander(
+            f"Consultar os 24 meses projetados — {nome}"
+        ):
+            st.dataframe(
+                tabela.style.format({
+                    "Previsão": "{:.2f}",
+                    "Limite inferior": "{:.2f}",
+                    "Limite superior": "{:.2f}"
+                }),
+                use_container_width=True,
+                hide_index=True
+            )
+
+    if analises_gerais:
+
+        st.markdown("---")
+        titulo("Resumo consolidado das projeções")
+
+        resumo = pd.DataFrame(analises_gerais)
+
+        st.dataframe(
+            resumo.style.format({
+                "Último observado": "{:.2f}",
+                "Previsão 12 meses": "{:.2f}",
+                "Previsão 24 meses": "{:.2f}",
+                "Variação em 24 meses": "{:+.2f}"
+            }),
+            use_container_width=True,
+            hide_index=True
         )
 
-    with c3:
-        card_metrica(
-            "Projeção em 24 meses",
-            formatar_valor(previsao[23], unidade),
-            f"{datas[23]:%m/%Y}",
-            "#10A77B"
-        )
+        st.markdown("### Interpretação conjunta")
 
-    titulo("Interpretação da projeção")
+        textos = []
 
-    variacao_12 = previsao[11] - serie.iloc[-1]
-    variacao_24 = previsao[23] - serie.iloc[-1]
+        for resultado in analises_gerais:
 
-    if variacao_24 > 0:
-        direcao = "crescimento"
-    elif variacao_24 < 0:
-        direcao = "redução"
-    else:
-        direcao = "estabilidade"
+            direcao = (
+                "aumento"
+                if resultado["Variação em 24 meses"] > 0
+                else (
+                    "redução"
+                    if resultado["Variação em 24 meses"] < 0
+                    else "estabilidade"
+                )
+            )
 
-    texto_analise(f"""
-    A projeção para **{sistema}** indica uma tendência de
-    **{direcao}** no indicador {nome_indicador.lower()}.
+            textos.append(
+                f"- **{resultado['Indicador']}**: "
+                f"projeção de {direcao}, saindo de "
+                f"{resultado['Último observado']:.2f} "
+                f"para {resultado['Previsão 24 meses']:.2f} "
+                f"{resultado['Unidade']} em 24 meses."
+            )
 
-    O valor projetado para 12 meses é
-    **{previsao[11]:.2f} {unidade}**, representando uma variação
-    de **{variacao_12:+.2f} {unidade}** em relação ao último
-    registro observado.
+        st.markdown("\n".join(textos))
 
-    Para 24 meses, o modelo estima
-    **{previsao[23]:.2f} {unidade}**, com variação acumulada
-    de **{variacao_24:+.2f} {unidade}**.
+        st.markdown("""
+        A leitura conjunta permite observar se os indicadores
+        apresentam movimentos convergentes ou divergentes.
+        Uma elevação da vazão natural, por exemplo, não implica
+        automaticamente aumento do volume armazenado, pois o
+        armazenamento também depende das retiradas, perdas,
+        transferências e decisões operacionais.
+        """)
 
-    O modelo escolhido foi **{melhor}**, definido a partir
-    da comparação de erros em validação temporal.
-    """)
+        if resultados_gerais:
 
-    titulo("Desempenho e validação dos modelos")
+            tabela_consolidada = pd.concat(
+                resultados_gerais,
+                ignore_index=True
+            )
 
-    st.dataframe(
-        avaliacao.style.format({
-            "MAE": "{:.3f}",
-            "RMSE": "{:.3f}",
-            "Viés": "{:.3f}"
-        }),
-        use_container_width=True,
-        hide_index=True
-    )
-
-    st.caption(
-        "MAE: erro absoluto médio. RMSE: raiz do erro quadrático médio. "
-        "Viés: erro médio com sinal. Quanto menores MAE e RMSE, "
-        "melhor o desempenho histórico do modelo."
-    )
-
-    tabela_previsao = pd.DataFrame({
-        "Data": datas,
-        "Indicador": nome_indicador,
-        "Previsão": previsao,
-        "Limite inferior aproximado": inferior,
-        "Limite superior aproximado": superior,
-        "Unidade": unidade,
-        "Modelo": melhor
-    })
-
-    titulo("Tabela de projeções")
-
-    st.dataframe(
-        tabela_previsao.style.format({
-            "Previsão": "{:.2f}",
-            "Limite inferior aproximado": "{:.2f}",
-            "Limite superior aproximado": "{:.2f}"
-        }),
-        use_container_width=True,
-        hide_index=True
-    )
-
-    st.download_button(
-        "Baixar projeção completa em CSV",
-        tabela_previsao.to_csv(
-            index=False,
-            sep=";",
-            decimal=",",
-            encoding="utf-8-sig"
-        ),
-        file_name=(
-            f"previsao_{normalizar(sistema)}_"
-            f"{normalizar(indicador)}.csv"
-        ),
-        mime="text/csv"
-    )
+            st.download_button(
+                "Baixar todas as previsões em CSV",
+                tabela_consolidada.to_csv(
+                    index=False,
+                    sep=";",
+                    decimal=",",
+                    encoding="utf-8-sig"
+                ),
+                file_name=(
+                    f"blue_essence_previsoes_"
+                    f"{normalizar(sistema)}.csv"
+                ),
+                mime="text/csv",
+                use_container_width=True
+            )
 
     st.info(
-        "As projeções são estimativas estatísticas condicionadas "
-        "ao comportamento histórico. As faixas apresentadas são "
-        "aproximações de incerteza, não intervalos calibrados nem "
-        "garantias. Os modelos não incorporam previsões futuras de "
-        "chuva, evaporação, captação, transferências ou regras "
-        "operacionais. A confiabilidade depende da extensão, "
-        "qualidade e estabilidade dos dados históricos."
+        "As projeções representam estimativas estatísticas "
+        "condicionadas ao histórico. As faixas são aproximações "
+        "de incerteza, não garantias. Os modelos não incorporam "
+        "previsões futuras de chuva, evaporação, captação, "
+        "transferências ou regras operacionais."
     )
 
 
