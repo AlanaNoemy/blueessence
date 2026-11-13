@@ -385,14 +385,16 @@ def configurar_grafico(fig, altura=390):
         paper_bgcolor="white",
         plot_bgcolor="white",
         font=dict(family="Nunito", color=NAVY, size=12),
-        margin=dict(l=20, r=20, t=55, b=30),
+        margin=dict(l=20, r=20, t=85, b=30),
         hovermode="x unified",
+        title=dict(x=0.01, xanchor="left"),
         legend=dict(
             orientation="h",
             yanchor="bottom",
             y=1.02,
             xanchor="left",
-            x=0
+            x=0.5,
+            font=dict(size=10)
         ),
         xaxis=dict(showgrid=False, linecolor="#E2EDF4"),
         yaxis=dict(gridcolor="#EAF1F6", zeroline=False)
@@ -417,6 +419,15 @@ def grafico_volume(dados, selecionados=None):
             line=dict(color=CORES[sistema], width=3)
         ))
 
+    adicionar_previsoes(
+        fig,
+        {
+            sistema: dados[sistema]["volume_util"]
+            for sistema in selecionados
+        },
+        "volume_util"
+    )
+
     fig.update_layout(
         title="Evolução histórica do volume útil",
         yaxis_title="Volume útil (%)",
@@ -428,6 +439,7 @@ def grafico_volume(dados, selecionados=None):
 
 def grafico_volume_total(dados):
     fig = go.Figure()
+    series = {}
 
     for sistema, df in dados.items():
         if "volume_total" not in df.columns:
@@ -442,6 +454,9 @@ def grafico_volume_total(dados):
                 name=sistema,
                 line=dict(color=CORES[sistema], width=2.5)
             ))
+            series[sistema] = serie
+
+    adicionar_previsoes(fig, series, "volume_total")
 
     fig.update_layout(
         title="Volume total armazenado",
@@ -475,6 +490,13 @@ def grafico_vazoes(df, sistema):
                     dash=estilo
                 )
             ))
+
+        adicionar_previsoes(
+            fig,
+            {sistema: serie},
+            indicador,
+            nome_indicador=nome
+        )
 
     fig.update_layout(
         title=f"Comportamento das vazões — {sistema}",
@@ -649,6 +671,105 @@ def gerar_previsao(valores, indice, indicador):
         melhor,
         avaliacao
     )
+
+
+def adicionar_previsoes(
+    fig, series_por_sistema, indicador, nome_indicador=None,
+    diferenciar=False
+):
+    if not st.session_state.get("exibir_previsoes", False):
+        return fig
+
+    nome_indicador = nome_indicador or INDICADORES[indicador]["nome"]
+    falhas = []
+
+    for sistema, serie in series_por_sistema.items():
+        serie = serie.dropna()
+
+        if len(serie) < 12:
+            falhas.append(
+                f"{sistema}: são necessários pelo menos 12 registros"
+            )
+            continue
+
+        try:
+            with st.spinner(
+                f"Calculando projeção de {nome_indicador.lower()} "
+                f"para {sistema}..."
+            ):
+                (
+                    serie_modelo,
+                    datas,
+                    previsao,
+                    _,
+                    _,
+                    _,
+                    _
+                ) = gerar_previsao(
+                    tuple(serie.values),
+                    tuple(serie.index.astype(str)),
+                    indicador
+                )
+        except Exception as erro:
+            falhas.append(f"{sistema}: {erro}")
+            continue
+
+        if diferenciar:
+            valores_observados = serie_modelo.diff().dropna()
+            if valores_observados.empty:
+                continue
+            ultimo_valor = valores_observados.iloc[-1]
+            valores_previsao = np.diff(
+                np.concatenate(([serie_modelo.iloc[-1]], previsao))
+            )
+            datas_grafico = [serie_modelo.index[-1], *datas]
+            valores_grafico = np.concatenate(
+                ([ultimo_valor], valores_previsao)
+            )
+        else:
+            datas_grafico = [serie_modelo.index[-1], *datas]
+            valores_grafico = np.concatenate(
+                ([serie_modelo.iloc[-1]], previsao)
+            )
+
+        exibir_chave_previsao = not any(
+            trace.legendgroup == "previsoes_24_meses"
+            and trace.showlegend is not False
+            for trace in fig.data
+        )
+
+        fig.add_trace(go.Scatter(
+            x=datas_grafico,
+            y=valores_grafico,
+            name=(
+                "Previsão (24 meses)"
+                if exibir_chave_previsao
+                else (
+                    f"{sistema} — {nome_indicador.lower()} "
+                    "— previsão 24 meses"
+                )
+            ),
+            legendgroup="previsoes_24_meses",
+            showlegend=exibir_chave_previsao,
+            mode="lines",
+            line=dict(
+                color=CORES[sistema],
+                width=2.5,
+                dash="dash"
+            ),
+            hovertemplate=(
+                f"{sistema} — {nome_indicador}<br>"
+                "%{x|%b %Y}<br>%{y:.2f}<extra></extra>"
+            )
+        ))
+
+    if falhas:
+        st.warning(
+            f"Não foi possível gerar a previsão de {nome_indicador.lower()} "
+            f"para: {'; '.join(falhas)}."
+        )
+
+    return fig
 
 
 def grafico_previsao(
@@ -898,6 +1019,11 @@ st.markdown("""
 # 10. MENU LATERAL
 # ============================================================
 
+def abrir_monitoramento(sistema):
+    st.session_state["pagina"] = "Monitoramento"
+    st.session_state["sistema_monitoramento"] = sistema
+
+
 with st.sidebar:
 
     st.markdown("""
@@ -921,17 +1047,46 @@ with st.sidebar:
             "Monitoramento",
             "Inteligência preditiva",
             "Análise científica"
-        ]
+        ],
+        key="pagina"
+    )
+
+    st.divider()
+    st.toggle(
+        "Exibir preditivos (24 meses)",
+        key="exibir_previsoes",
+        help=(
+            "Sobrepõe projeções de dois anos nos gráficos de séries "
+            "temporais. Gráficos estatísticos não são alterados."
+        )
     )
 
     st.divider()
     st.caption("SISTEMAS MONITORADOS")
+    st.caption("Clique em um sistema para abrir seu monitoramento.")
+
+    st.button(
+        "🌐 Todos os reservatórios",
+        key="abrir_monitoramento_todos",
+        use_container_width=True,
+        on_click=abrir_monitoramento,
+        args=("Todos",)
+    )
+
+    icones_sistemas = {
+        "Cantareira": "🔵",
+        "Alto Tietê": "🟢",
+        "Guarapiranga": "🟠",
+        "Rio Claro": "🔴"
+    }
 
     for sistema in dados:
-        st.markdown(
-            f"<div style='padding:5px;color:{CORES[sistema]};"
-            f"font-weight:800;'>● {sistema}</div>",
-            unsafe_allow_html=True
+        st.button(
+            f"{icones_sistemas.get(sistema, '🔹')} {sistema}",
+            key=f"abrir_monitoramento_{normalizar(sistema)}",
+            use_container_width=True,
+            on_click=abrir_monitoramento,
+            args=(sistema,)
         )
 
     st.divider()
@@ -1024,111 +1179,174 @@ elif pagina == "Monitoramento":
 
     titulo(
         "Monitoramento operacional",
-        "Explore os indicadores históricos de cada reservatório."
+        "Explore um reservatório ou compare todos os sistemas."
     )
 
     sistema = st.selectbox(
         "Selecione o reservatório",
-        list(dados.keys())
+        ["Todos"] + list(dados.keys()),
+        key="sistema_monitoramento"
     )
 
-    df = dados[sistema]
-    serie = df["volume_util"].dropna()
-
-    atual = serie.iloc[-1]
-    minimo = serie.min()
-    maximo = serie.max()
-    media = serie.mean()
-
-    c1, c2, c3, c4 = st.columns(4)
-
-    with c1:
-        card_metrica(
-            "Volume útil atual",
-            f"{atual:.2f}%",
-            "Último registro",
-            CORES[sistema]
+    if sistema == "Todos":
+        titulo(
+            "Comparativo dos reservatórios",
+            "Compare o volume útil atual e o histórico de cada sistema."
         )
 
-    with c2:
-        card_metrica(
-            "Média histórica",
-            f"{media:.2f}%",
-            "Média da série",
-            AZUL
-        )
+        colunas = st.columns(len(dados))
+        comparativo = []
 
-    with c3:
-        card_metrica(
-            "Maior volume",
-            f"{maximo:.2f}%",
-            "Máximo observado",
-            "#10B981"
-        )
+        for coluna, (nome_sistema, df_sistema) in zip(
+            colunas, dados.items()
+        ):
+            serie_sistema = df_sistema["volume_util"].dropna()
+            atual_sistema = serie_sistema.iloc[-1]
+            anterior_sistema = (
+                serie_sistema.iloc[-2]
+                if len(serie_sistema) > 1
+                else atual_sistema
+            )
 
-    with c4:
-        card_metrica(
-            "Menor volume",
-            f"{minimo:.2f}%",
-            "Mínimo observado",
-            "#E77B76"
-        )
+            with coluna:
+                card_metrica(
+                    nome_sistema,
+                    f"{atual_sistema:.2f}%",
+                    f"{atual_sistema - anterior_sistema:+.2f} p.p. "
+                    "no último mês",
+                    CORES[nome_sistema]
+                )
 
-    titulo("Evolução do volume útil")
-
-    st.plotly_chart(
-        grafico_volume(dados, [sistema]),
-        use_container_width=True
-    )
-
-    if "volume_total" in df.columns:
-        fig = go.Figure()
-
-        fig.add_trace(go.Scatter(
-            x=df.index,
-            y=df["volume_total"],
-            name="Volume total",
-            line=dict(color=CORES[sistema], width=3)
-        ))
-
-        fig.update_layout(
-            title="Volume total armazenado",
-            yaxis_title="Volume (hm³)"
-        )
-
-        st.plotly_chart(
-            configurar_grafico(fig),
-            use_container_width=True
-        )
-
-    if "vazao_captada" in df.columns or "vazao_natural" in df.columns:
-        st.plotly_chart(
-            grafico_vazoes(df, sistema),
-            use_container_width=True
-        )
-
-    titulo("Diagnóstico do sistema")
-    texto_analise(analise_reservatorio(df, sistema))
-
-    with st.expander("Consultar dados históricos"):
-        tabela = df.copy()
-        tabela.index.name = "Data"
+            comparativo.append({
+                "Reservatório": nome_sistema,
+                "Volume útil atual (%)": f"{atual_sistema:.2f}",
+                "Média histórica (%)": f"{serie_sistema.mean():.2f}",
+                "Mínimo (%)": f"{serie_sistema.min():.2f}",
+                "Máximo (%)": f"{serie_sistema.max():.2f}"
+            })
 
         st.dataframe(
-            tabela,
+            pd.DataFrame(comparativo).set_index("Reservatório"),
             use_container_width=True
         )
 
-        st.download_button(
-            "Baixar histórico em CSV",
-            tabela.to_csv(
-                sep=";",
-                decimal=",",
-                encoding="utf-8-sig"
-            ),
-            file_name=f"historico_{normalizar(sistema)}.csv",
-            mime="text/csv"
+        fig = grafico_volume(dados)
+        fig.update_layout(title="Comparativo histórico do volume útil")
+        st.plotly_chart(fig, use_container_width=True)
+
+        if any(
+            "volume_total" in df_sistema.columns
+            and df_sistema["volume_total"].notna().any()
+            for df_sistema in dados.values()
+        ):
+            st.plotly_chart(
+                grafico_volume_total(dados),
+                use_container_width=True
+            )
+    else:
+        df = dados[sistema]
+        serie = df["volume_util"].dropna()
+
+        atual = serie.iloc[-1]
+        minimo = serie.min()
+        maximo = serie.max()
+        media = serie.mean()
+
+        c1, c2, c3, c4 = st.columns(4)
+
+        with c1:
+            card_metrica(
+                "Volume útil atual",
+                f"{atual:.2f}%",
+                "Último registro",
+                CORES[sistema]
+            )
+
+        with c2:
+            card_metrica(
+                "Média histórica",
+                f"{media:.2f}%",
+                "Média da série",
+                AZUL
+            )
+
+        with c3:
+            card_metrica(
+                "Maior volume",
+                f"{maximo:.2f}%",
+                "Máximo observado",
+                "#10B981"
+            )
+
+        with c4:
+            card_metrica(
+                "Menor volume",
+                f"{minimo:.2f}%",
+                "Mínimo observado",
+                "#E77B76"
+            )
+
+        titulo("Evolução do volume útil")
+
+        st.plotly_chart(
+            grafico_volume(dados, [sistema]),
+            use_container_width=True
         )
+
+        if "volume_total" in df.columns:
+            fig = go.Figure()
+
+            fig.add_trace(go.Scatter(
+                x=df.index,
+                y=df["volume_total"],
+                name="Volume total",
+                line=dict(color=CORES[sistema], width=3)
+            ))
+
+            adicionar_previsoes(
+                fig,
+                {sistema: df["volume_total"]},
+                "volume_total"
+            )
+
+            fig.update_layout(
+                title="Volume total armazenado",
+                yaxis_title="Volume (hm³)"
+            )
+
+            st.plotly_chart(
+                configurar_grafico(fig),
+                use_container_width=True
+            )
+
+        if "vazao_captada" in df.columns or "vazao_natural" in df.columns:
+            st.plotly_chart(
+                grafico_vazoes(df, sistema),
+                use_container_width=True
+            )
+
+        titulo("Diagnóstico do sistema")
+        texto_analise(analise_reservatorio(df, sistema))
+
+        with st.expander("Consultar dados históricos"):
+            tabela = df.copy()
+            tabela.index.name = "Data"
+
+            st.dataframe(
+                tabela,
+                use_container_width=True
+            )
+
+            st.download_button(
+                "Baixar histórico em CSV",
+                tabela.to_csv(
+                    sep=";",
+                    decimal=",",
+                    encoding="utf-8-sig"
+                ),
+                file_name=f"historico_{normalizar(sistema)}.csv",
+                mime="text/csv"
+            )
 
 
 # ============================================================
@@ -1136,6 +1354,13 @@ elif pagina == "Monitoramento":
 # ============================================================
 
 elif pagina == "Inteligência preditiva":
+
+    if not st.session_state.get("exibir_previsoes", False):
+        st.info(
+            "Ative “Exibir preditivos (24 meses)” no menu lateral "
+            "para visualizar as projeções."
+        )
+        st.stop()
 
     titulo(
         "Inteligência preditiva",
@@ -1579,6 +1804,15 @@ elif pagina == "Análise científica":
                 line=dict(color=CORES[sistema], width=3, dash="dash")
             ))
 
+    adicionar_previsoes(
+        fig,
+        {
+            sistema: df["volume_util"]
+            for sistema, df in dados.items()
+        },
+        "volume_util"
+    )
+
     fig.update_layout(
         title="Volume útil e média móvel de 12 meses",
         yaxis_title="Volume útil (%)"
@@ -1605,6 +1839,17 @@ elif pagina == "Análise científica":
             name=sistema,
             line=dict(color=CORES[sistema], width=2)
         ))
+
+    adicionar_previsoes(
+        fig,
+        {
+            sistema: df["volume_util"]
+            for sistema, df in dados.items()
+        },
+        "volume_util",
+        nome_indicador="variação mensal do volume útil",
+        diferenciar=True
+    )
 
     fig.add_hline(
         y=0,
