@@ -206,6 +206,16 @@ div[data-testid="stPlotlyChart"] {
     color: white;
 }
 
+div[class*="st-key-abrir_monitoramento_"] button {
+    background: #8ED8F8;
+    color: #17466A;
+}
+
+div[class*="st-key-abrir_monitoramento_"] button:hover {
+    background: #72CCF4;
+    color: #17466A;
+}
+
 footer {
     visibility: hidden;
 }
@@ -1783,6 +1793,7 @@ elif pagina == "Análise científica":
     st.markdown("### 3. Tendência e médias móveis")
 
     fig = go.Figure()
+    legenda_media_movel_exibida = False
 
     for sistema, df in dados.items():
         serie = df["volume_util"].dropna()
@@ -1790,7 +1801,7 @@ elif pagina == "Análise científica":
         fig.add_trace(go.Scatter(
             x=serie.index,
             y=serie,
-            name=f"{sistema} — observado",
+            name=sistema,
             line=dict(color=CORES[sistema], width=1.5)
         ))
 
@@ -1800,9 +1811,15 @@ elif pagina == "Análise científica":
             fig.add_trace(go.Scatter(
                 x=media_movel.index,
                 y=media_movel,
-                name=f"{sistema} — média móvel",
-                line=dict(color=CORES[sistema], width=3, dash="dash")
+                name="Média móvel (12 meses)",
+                showlegend=not legenda_media_movel_exibida,
+                line=dict(color=CORES[sistema], width=3, dash="dash"),
+                hovertemplate=(
+                    f"{sistema} — média móvel: "
+                    "%{y:.2f}%<extra></extra>"
+                )
             ))
+            legenda_media_movel_exibida = True
 
     adicionar_previsoes(
         fig,
@@ -1814,7 +1831,7 @@ elif pagina == "Análise científica":
     )
 
     fig.update_layout(
-        title="Volume útil e média móvel de 12 meses",
+        title="Volume útil e média móvel",
         yaxis_title="Volume útil (%)"
     )
 
