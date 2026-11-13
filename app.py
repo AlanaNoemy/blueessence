@@ -5,6 +5,7 @@
 # Streamlit + Python + Pandas + Plotly + Statsmodels
 # ============================================================
 
+import re
 import warnings
 import unicodedata
 from pathlib import Path
@@ -735,6 +736,8 @@ def card_metrica(nome, valor, descricao, cor):
 
 
 def texto_analise(texto):
+    texto = texto.replace("\n", "<br>")
+    texto = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", texto, flags=re.DOTALL)
     st.markdown(
         f'<div class="info-card">{texto}</div>',
         unsafe_allow_html=True
